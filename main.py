@@ -68,7 +68,13 @@ class Tx:
 
     def Tick(self, t):
         if self._active:
-            self._txQ.put(0)
+            I = np.sin(2*np.pi*1.1*t)
+            I = 1 if I > 0 else -1
+            Q = np.sin(2*np.pi*1.5*t)
+            Q = 1 if Q > 0 else -1
+            samp = I*np.cos(2*np.pi*10*t) + Q*np.sin(2*np.pi*10*t)
+            
+            self._txQ.put(samp)
 
 class Ch:
     def __init__(self):
@@ -79,26 +85,53 @@ class Ch:
 
         self._rxs = 0
 
+        self._P_n = 0.01
+
     def Tick(self, t):
         if not self._rxQ.empty():
             rx = self._rxQ.get()
+            self._txQ.put(rx + AWGN(self._P_n))
 
             self._rxs += 1
 
             if self._rxs > 100000:
-                Log(f"ch got 100000 rxs")
                 self._rxs = 0
+                # DEBUG: log here?
         else:
-            self._txQ.put(AWGN(1))
+            self._txQ.put(AWGN(self._P_n))
 
 class Rx:
     def __init__(self):
         global rxQ
         self._rxQ = rxQ
 
+        self._nvals = 16384
+        self._vals = np.zeros(self._nvals)
+        self._ivals = 0
+
+        plt.ion()
+        plt.plot(self._vals)
+        plt.pause(0.0001)
+
+        self._refresh_len = 100000
+        self._refresh_timer = self._refresh_len
+
     def Tick(self, t):
         if not self._rxQ.empty():
             rx = self._rxQ.get()
+            self._vals[self._ivals] = rx
+
+            self._ivals += 1
+            self._refresh_timer -= 1
+
+            if self._ivals >= self._nvals:
+                self._ivals = 0
+                plt.clf()
+                plt.plot(self._vals)
+                plt.pause(0.0001)
+
+                if self._refresh_timer <= 0:
+                    self._refresh_timer = self._refresh_len
 
 if __name__ == "__main__":
     main()
