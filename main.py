@@ -20,7 +20,6 @@ b = np.genfromtxt("filter.csv", delimiter=",")
 
 np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
-Log(str(SEQ[0:10]))
 bpSym = 2
 spSym = 10000
 
@@ -41,15 +40,20 @@ def main():
         if not kbQ.empty():
             act = kbQ.get()
 
-            if act == "t":
-                tx.Toggle()
-            elif act == "r":
-                rx.Toggle()
+            for k in act.split(" "):
+                if k == "t":
+                    tx.Toggle()
+                elif k == "r":
+                    rx.Toggle()
 
         tx.Tick(t)
         ch.Tick(t)
         rx.Tick(t)
         t += 1/Fs
+
+        # DEBUG: is this needed? avoid overflow for various calculations
+        if t > 100*Fs:
+            t = 0
 
     kb.join()
 
@@ -92,7 +96,7 @@ class Tx:
 
     def Tick(self, t):
         if self._active:
-            # Get next symbol from PRBS sequence, at iseq and bpSym in len
+            # Get next symbol from PRBS sequence, at iseq. bpSym in len
             self._iseq = int(np.floor(t / self._sec_per_sym) * self._bpSym) % self._nseq
 
             I = self._seq[self._iseq] * 2 - 1
@@ -110,7 +114,7 @@ class Ch:
 
         self._rxs = 0
 
-        self._P_n = 0.01
+        self._P_n = 1
 
     def Tick(self, t):
         if not self._rxQ.empty():
@@ -141,26 +145,34 @@ class Rx:
         self._Q = np.zeros(self._nvals)
 
         self._paused = False
-        
-        plt.figure()
-        plt.ion()
-        self._Plot()
+
+        global bpSym
+        global spSym
+        global SEQ
+        global Fs
+        self._seq = SEQ
+        self._nseq = len(self._seq)
         
         self._bpSym = bpSym
         self._spSym = spSym
         self._sec_per_sym = self._spSym / Fs
         self._isymsamples = 0
-        self._symsamps = np.zeros(self._spSym)
+        self._Isymsamps = np.zeros(self._spSym)
+        self._Qsymsamps = np.zeros(self._spSym)
+        
+        plt.figure()
+        plt.ion()
+        self._Plot()
 
     def Toggle(self):
         self._paused = not self._paused
 
     def _Plot(self):
         plt.clf()
-        plt.subplot(221); plt.plot(self._tvals, self._vals); plt.ylim(-1,1)
-        plt.subplot(222); plt.plot(self._I_rcv); plt.ylim(-1,1)
-        plt.subplot(223); plt.plot(self._I); plt.ylim(-1,1)
-        plt.subplot(224); plt.plot(self._I, self._Q, "."); plt.xlim(-1,1); plt.ylim(-1,1)
+        plt.subplot(221); plt.plot(self._tvals, self._vals); plt.ylim(-5,5); plt.title("Received Signal")
+        plt.subplot(222); plt.plot(np.abs(np.fft.fft(self._vals, 1024))); plt.title("DFT of Received Signal")
+        plt.subplot(223); plt.plot(self._I); plt.plot(self._Q); plt.ylim(-1.2,1.2); plt.title("Baseband IQ Data Over Time")
+        plt.subplot(224); plt.plot(self._I, self._Q, "."); plt.xlim(-1.2,1.2); plt.ylim(-1.2,1.2); plt.title("IQ Diagram")
         plt.pause(0.1)
 
     def Tick(self, t):
@@ -168,7 +180,7 @@ class Rx:
             rx = self._rxQ.get()
             self._tvals[self._ivals] = rx[0]
             self._vals[self._ivals] = rx[1]
-
+            
             self._ivals += 1
 
             if self._ivals >= self._nvals:
@@ -181,6 +193,37 @@ class Rx:
                 M = len(b)
                 self._I = np.convolve(self._I_rcv, b)[M:N]
                 self._Q = np.convolve(self._Q_rcv, b)[M:N]
+                
+                for i in range(0, len(self._I)):
+                    nt = self._tvals[i]
+                    idx = int(np.floor(nt / self._sec_per_sym * self._spSym)) % self._spSym
+
+                    # at the start of a new symbol
+                    if idx < self._isymsamples:
+                        sym = np.array([-1, -1])
+                        v = np.mean(self._Isymsamps)
+                        if v > 0:
+                            sym[0] = 1
+                        else:
+                            sym[0] = 0
+
+                        v = np.mean(self._Qsymsamps)
+                        if v > 0:
+                            sym[1] = 1
+                        else:
+                            sym[1] = 0
+
+                        if sym[0] != -1 and sym[1] != -1:
+                            Log("x:"+str(sym), end=" ")
+                            # TODO: not sure why the "- self._bpsym" is needed here. Investigate
+                            iseq = int(np.floor(nt / self._sec_per_sym) * self._bpSym) % self._nseq - self._bpSym
+                            target = self._seq[iseq:iseq+2]
+                            Log(", y:" + str(target), end=" ")
+                            Log(str(target == sym))
+
+                    self._Isymsamps[idx] = self._I[i]
+                    self._Qsymsamps[idx] = self._Q[i]
+                    self._isymsamples = idx
 
                 if not self._paused:
                     self._Plot()
