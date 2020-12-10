@@ -14,15 +14,3 @@ def Log(s, end="\n"):
     sys.stdout.write(s)
     sys.stdout.write(end)
     sys.stdout.flush()
-
-class Connection_Server:
-    def __init__(self, p):
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._addr = ("localhost", p)
-        self._sock.bind(self._addr)
-
-        self._rxQ = []
-        self._txQ = []
-
-    def Recv(self):
-        pass

@@ -43,6 +43,7 @@ def main():
             for k in act.split(" "):
                 if k == "t":
                     tx.Toggle()
+                    rx.SetTransmitterActive(tx.IsActive())
                 elif k == "r":
                     rx.Toggle()
 
@@ -93,6 +94,9 @@ class Tx:
 
     def Toggle(self):
         self._active = not self._active
+    
+    def IsActive(self):
+        return self._active
 
     def Tick(self, t):
         if self._active:
@@ -114,7 +118,7 @@ class Ch:
 
         self._rxs = 0
 
-        self._P_n = 1
+        self._P_n = 0.05
 
     def Tick(self, t):
         if not self._rxQ.empty():
@@ -159,10 +163,19 @@ class Rx:
         self._isymsamples = 0
         self._Isymsamps = np.zeros(self._spSym)
         self._Qsymsamps = np.zeros(self._spSym)
+
+        self._transmitter_active = False
+        self._powers_noise = []
+        self._powers_signal = []
+        self._P_s_n = 0 # this is an averaged value of Power of signal + noise
+        self._P_n = 0 # this is an averaged value of Power of noise
         
         plt.figure()
         plt.ion()
         self._Plot()
+
+    def SetTransmitterActive(self, b):
+        self._transmitter_active = b
 
     def Toggle(self):
         self._paused = not self._paused
@@ -185,6 +198,23 @@ class Rx:
 
             if self._ivals >= self._nvals:
                 self._ivals = 0
+
+                power = 1 / self._nvals * np.sum(np.square(self._vals))
+                power_dB = 10*np.log10(power)
+                Log("power = " + str(power_dB) + " dB")
+
+                if self._transmitter_active:
+                    self._powers_signal.append(power)
+                    self._P_s_n = np.mean(self._powers_signal)
+                else:
+                    self._powers_noise.append(power)
+                    self._P_n = np.mean(self._powers_noise)
+                    Log("P_n = " + str(self._P_n))
+                
+                if self._P_s_n > self._P_n and self._P_n > 0:
+                    SNR = (self._P_s_n - self._P_n) / self._P_n
+                    SNR_dB = 10*np.log10(SNR)
+                    Log("SNR = " + str(SNR_dB) + " dB")
 
                 self._I_rcv = self._vals * np.cos(2*np.pi*fc*self._tvals)
                 self._Q_rcv = self._vals * np.sin(2*np.pi*fc*self._tvals)
