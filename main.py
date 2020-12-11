@@ -21,7 +21,7 @@ b = np.genfromtxt("filter.csv", delimiter=",")
 np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
 bpSym = 2
-spSym = 10000
+spSym = 50
 
 def main():
     Log("Main program started.")
@@ -118,7 +118,7 @@ class Ch:
 
         self._rxs = 0
 
-        self._P_n = 0.05
+        self._P_n = 0.1
 
     def Tick(self, t):
         if not self._rxQ.empty():
@@ -169,6 +169,11 @@ class Rx:
         self._powers_signal = []
         self._P_s_n = 0 # this is an averaged value of Power of signal + noise
         self._P_n = 0 # this is an averaged value of Power of noise
+        self._nSNR_averages = 5
+
+        self._bits_total = 0
+        self._bits_correct = 0
+        self._BER = 1
         
         plt.figure()
         plt.ion()
@@ -209,7 +214,12 @@ class Rx:
                 else:
                     self._powers_noise.append(power)
                     self._P_n = np.mean(self._powers_noise)
-                    Log("P_n = " + str(self._P_n))
+
+                # Only keep a few of the most recent entries in either array for SNR
+                if len(self._powers_noise) > self._nSNR_averages:
+                    del self._powers_noise[0]
+                if len(self._powers_signal) > self._nSNR_averages:
+                    del self._powers_signal[0]
                 
                 if self._P_s_n > self._P_n and self._P_n > 0:
                     SNR = (self._P_s_n - self._P_n) / self._P_n
@@ -224,6 +234,9 @@ class Rx:
                 self._I = np.convolve(self._I_rcv, b)[M:N]
                 self._Q = np.convolve(self._Q_rcv, b)[M:N]
                 
+                
+                nCorrect = 0
+                nTotal = 0
                 for i in range(0, len(self._I)):
                     nt = self._tvals[i]
                     idx = int(np.floor(nt / self._sec_per_sym * self._spSym)) % self._spSym
@@ -244,16 +257,32 @@ class Rx:
                             sym[1] = 0
 
                         if sym[0] != -1 and sym[1] != -1:
-                            Log("x:"+str(sym), end=" ")
+                            # Log("x:"+str(sym), end=" ")
                             # TODO: not sure why the "- self._bpsym" is needed here. Investigate
                             iseq = int(np.floor(nt / self._sec_per_sym) * self._bpSym) % self._nseq - self._bpSym
                             target = self._seq[iseq:iseq+2]
-                            Log(", y:" + str(target), end=" ")
-                            Log(str(target == sym))
+                            # Log(", y:" + str(target), end=" ")
+                            # Log(str(target == sym))
+                            if len(target > 0):
+                                nTotal += 1
+                                eqAr = target == sym
+                                if eqAr[0] and eqAr[1]:
+                                    nCorrect += 1
 
                     self._Isymsamps[idx] = self._I[i]
                     self._Qsymsamps[idx] = self._Q[i]
                     self._isymsamples = idx
+                    
+                # Calculate BER
+                if self._transmitter_active:
+                    self._bits_total += nTotal * self._bpSym
+                    self._bits_correct += nCorrect * self._bpSym
+                    self._BER = 1 - self._bits_correct / self._bits_total
+
+                    # Output how many symbols were correct
+                    Log("Got " + str(nCorrect) + "/" + str(nTotal) + " correct this time.")
+                    Log("BER = " + str(self._BER))
+                    Log("-----------------------------------------------------")
 
                 if not self._paused:
                     self._Plot()
