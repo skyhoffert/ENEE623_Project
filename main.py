@@ -23,6 +23,13 @@ SEQ = np.random.randint(2, size=16384)
 bpSym = 2
 spSym = 50
 
+constellation = [
+    np.array([ 1.0,  1.0]), # 0
+    np.array([-1.0,  1.0]), # 1
+    np.array([-1.0, -1.0]), # 2
+    np.array([ 1.0, -1.0]), # 3
+]
+
 def main():
     Log("Main program started.")
 
@@ -85,12 +92,15 @@ class Tx:
         global spSym
         global SEQ
         global Fs
+        global constellation
         self._seq = SEQ
         self._nseq = len(self._seq)
 
         self._bpSym = bpSym
         self._spSym = spSym
         self._sec_per_sym = self._spSym / Fs
+
+        self._constellation = constellation
 
     def Toggle(self):
         self._active = not self._active
@@ -103,8 +113,14 @@ class Tx:
             # Get next symbol from PRBS sequence, at iseq. bpSym in len
             self._iseq = int(np.floor(t / self._sec_per_sym) * self._bpSym) % self._nseq
 
-            I = self._seq[self._iseq] * 2 - 1
-            Q = self._seq[self._iseq+1] * 2 - 1
+            vals = self._seq[self._iseq:self._iseq+self._bpSym]
+            v = 0 # this is the decimal value of the next symbol
+            for i in range(0,self._bpSym):
+                v += vals[i] * 2**(self._bpSym-i-1)
+            sym = self._constellation[v]
+
+            I = sym[0]
+            Q = sym[1]
             samp = I*np.cos(2*np.pi*fc*t) + Q*np.sin(2*np.pi*fc*t)
             
             self._txQ.put((t,samp))
@@ -118,7 +134,7 @@ class Ch:
 
         self._rxs = 0
 
-        self._P_n = 0.1
+        self._P_n = 0.05
 
     def Tick(self, t):
         if not self._rxQ.empty():
@@ -154,6 +170,8 @@ class Rx:
         global spSym
         global SEQ
         global Fs
+        global constellation
+
         self._seq = SEQ
         self._nseq = len(self._seq)
         
@@ -171,9 +189,11 @@ class Rx:
         self._P_n = 0 # this is an averaged value of Power of noise
         self._nSNR_averages = 5
 
-        self._bits_total = 0
-        self._bits_correct = 0
+        self._bits_total = 1
+        self._bits_correct = 1
         self._BER = 1
+
+        self._constellation = constellation
         
         plt.figure()
         plt.ion()
@@ -234,7 +254,6 @@ class Rx:
                 self._I = np.convolve(self._I_rcv, b)[M:N]
                 self._Q = np.convolve(self._Q_rcv, b)[M:N]
                 
-                
                 nCorrect = 0
                 nTotal = 0
                 for i in range(0, len(self._I)):
@@ -243,31 +262,26 @@ class Rx:
 
                     # at the start of a new symbol
                     if idx < self._isymsamples:
-                        sym = np.array([-1, -1])
-                        v = np.mean(self._Isymsamps)
-                        if v > 0:
-                            sym[0] = 1
-                        else:
-                            sym[0] = 0
+                        v = np.array([np.mean(self._Isymsamps), np.mean(self._Qsymsamps)])
+                        dists = np.zeros(len(self._constellation))
 
-                        v = np.mean(self._Qsymsamps)
-                        if v > 0:
-                            sym[1] = 1
-                        else:
-                            sym[1] = 0
+                        for (i,c) in enumerate(self._constellation):
+                            dist = np.linalg.norm(v - c)
+                            dists[i] = dist
+                        guess_val = np.argmin(dists)
 
-                        if sym[0] != -1 and sym[1] != -1:
-                            # Log("x:"+str(sym), end=" ")
-                            # TODO: not sure why the "- self._bpsym" is needed here. Investigate
-                            iseq = int(np.floor(nt / self._sec_per_sym) * self._bpSym) % self._nseq - self._bpSym
-                            target = self._seq[iseq:iseq+2]
-                            # Log(", y:" + str(target), end=" ")
-                            # Log(str(target == sym))
-                            if len(target > 0):
-                                nTotal += 1
-                                eqAr = target == sym
-                                if eqAr[0] and eqAr[1]:
-                                    nCorrect += 1
+                        # TODO: not sure why the "- self._bpsym" is needed here. Investigate
+                        iseq = int(np.floor(nt / self._sec_per_sym) * self._bpSym) % self._nseq - self._bpSym
+                        target = self._seq[iseq:iseq+self._bpSym]
+                        
+                        if len(target) > 0:
+                            target_val = 0 # this is the decimal value of the next symbol
+                            for i in range(0,self._bpSym):
+                                target_val += target[i] * 2**(self._bpSym-i-1)
+
+                            nTotal += 1
+                            if target_val == guess_val:
+                                nCorrect += 1
 
                     self._Isymsamps[idx] = self._I[i]
                     self._Qsymsamps[idx] = self._Q[i]
