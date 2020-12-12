@@ -9,10 +9,7 @@ from queue import Queue
 
 from util import Log
 
-chQ = Queue()
-rxQ = Queue()
 kbQ = Queue()
-txQ = Queue()
 KILL = False
 
 Fs = 44100.23
@@ -21,24 +18,14 @@ b = np.genfromtxt("filter.csv", delimiter=",")
 
 np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
-bpSym = 2
-spSym = 5000
-
-constellation = [
-    np.array([ 1.0,  1.0]), # 0
-    np.array([-1.0,  1.0]), # 1
-    np.array([-1.0, -1.0]), # 2
-    np.array([ 1.0, -1.0]), # 3
-]
 
 def main():
     Log("Main program started.")
 
-    tx = Tx()
-    ch = Ch()
-    rx = Rx()
     kb = threading.Thread(target=ThreadKB)
     kb.start()
+
+    ind = Individual()
 
     global KILL
     global kbQ
@@ -50,14 +37,11 @@ def main():
 
             for k in act.split(" "):
                 if k == "t":
-                    tx.Toggle()
-                    rx.SetTransmitterActive(tx.IsActive())
+                    ind.TxToggle()
                 elif k == "r":
-                    rx.Toggle()
+                    ind.RxToggle()
 
-        tx.Tick(t)
-        ch.Tick(t)
-        rx.Tick(t)
+        ind.Tick(t)
         t += 1/Fs
 
         # DEBUG: is this needed? avoid overflow for various calculations
@@ -81,21 +65,48 @@ def ThreadKB():
 def AWGN(v):
     return np.random.normal(0,v,1)[0]
 
-class Tx:
+class Individual:
     def __init__(self):
-        global chQ
-        global txQ
-        self._txQ = chQ
+        self._M = 4
+        self._bpSym = int(np.log2(self._M))
+        self._spSym = 50
+
+        self._constellation = [
+            np.array([ 1.0,  1.0]), # 0
+            np.array([-1.0,  1.0]), # 1
+            np.array([-1.0, -1.0]), # 2
+            np.array([ 1.0, -1.0]), # 3
+        ]
+
+        self._chQ = Queue()
+        self._rxQ = Queue()
+        self._txQ = Queue()
+
+        self._tx = Tx(self._chQ, self._txQ, self._bpSym, self._spSym, self._constellation)
+        self._ch = Ch(self._rxQ, self._chQ)
+        self._rx = Rx(self._txQ, self._rxQ, self._bpSym, self._spSym, self._constellation)
+
+    def Tick(self, t):
+        self._tx.Tick(t)
+        self._ch.Tick(t)
+        self._rx.Tick(t)
+
+    def TxToggle(self):
+        self._tx.Toggle()
+        self._rx.SetTransmitterActive(self._tx.IsActive())
+
+    def RxToggle(self):
+        self._rx.Toggle()
+
+class Tx:
+    def __init__(self, txQ, rxQ, bpSym, spSym, constellation):
         self._active = False
-        self._rxQ = txQ
+
+        self._txQ = txQ
+        self._rxQ = rxQ
 
         self._iseq = 0
 
-        global bpSym
-        global spSym
-        global SEQ
-        global Fs
-        global constellation
         self._seq = SEQ
         self._nseq = len(self._seq)
 
@@ -133,11 +144,9 @@ class Tx:
             Log("tx got SNR=" + str(rx["SNR"]) + ", BER=" + str(rx["BER"]))
 
 class Ch:
-    def __init__(self):
-        global chQ
-        self._rxQ = chQ
-        global rxQ
-        self._txQ = rxQ
+    def __init__(self, txQ, rxQ):
+        self._rxQ = rxQ
+        self._txQ = txQ
 
         self._rxs = 0
 
@@ -157,9 +166,7 @@ class Ch:
             self._txQ.put((t, AWGN(self._P_n)))
 
 class Rx:
-    def __init__(self):
-        global rxQ
-        global txQ
+    def __init__(self, txQ, rxQ, bpSym, spSym, constellation):
         self._rxQ = rxQ
         self._txQ = txQ
 
@@ -173,13 +180,7 @@ class Rx:
         self._I = np.zeros(self._nvals)
         self._Q = np.zeros(self._nvals)
 
-        self._paused = False
-
-        global bpSym
-        global spSym
-        global SEQ
-        global Fs
-        global constellation
+        self._paused = True
 
         self._seq = SEQ
         self._nseq = len(self._seq)
@@ -204,9 +205,9 @@ class Rx:
 
         self._constellation = constellation
         
-        plt.figure()
-        plt.ion()
-        self._Plot()
+        # plt.figure()
+        # plt.ion()
+        # self._Plot()
 
     def SetTransmitterActive(self, b):
         self._transmitter_active = b
@@ -296,6 +297,10 @@ class Rx:
                     self._Qsymsamps[idx] = self._Q[i]
                     self._isymsamples = idx
                     
+                # TODO: fix BER, currently broken
+                # TODO: add metric for Power utilization! how much energy influences a constellation
+                # TODO: add metric for throughput (only applicable if M, # of points, is variable)
+
                 # Calculate BER
                 if self._transmitter_active:
                     self._bits_total += nTotal * self._bpSym
