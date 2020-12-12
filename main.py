@@ -12,6 +12,7 @@ from util import Log
 chQ = Queue()
 rxQ = Queue()
 kbQ = Queue()
+txQ = Queue()
 KILL = False
 
 Fs = 44100.23
@@ -21,7 +22,7 @@ b = np.genfromtxt("filter.csv", delimiter=",")
 np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
 bpSym = 2
-spSym = 50
+spSym = 5000
 
 constellation = [
     np.array([ 1.0,  1.0]), # 0
@@ -83,8 +84,10 @@ def AWGN(v):
 class Tx:
     def __init__(self):
         global chQ
+        global txQ
         self._txQ = chQ
         self._active = False
+        self._rxQ = txQ
 
         self._iseq = 0
 
@@ -124,6 +127,10 @@ class Tx:
             samp = I*np.cos(2*np.pi*fc*t) + Q*np.sin(2*np.pi*fc*t)
             
             self._txQ.put((t,samp))
+        
+        if not self._rxQ.empty():
+            rx = self._rxQ.get()
+            Log("tx got SNR=" + str(rx["SNR"]) + ", BER=" + str(rx["BER"]))
 
 class Ch:
     def __init__(self):
@@ -152,7 +159,9 @@ class Ch:
 class Rx:
     def __init__(self):
         global rxQ
+        global txQ
         self._rxQ = rxQ
+        self._txQ = txQ
 
         self._nvals = pow(2,15)
         self._vals = np.zeros(self._nvals)
@@ -210,7 +219,7 @@ class Rx:
         plt.subplot(221); plt.plot(self._tvals, self._vals); plt.ylim(-5,5); plt.title("Received Signal")
         plt.subplot(222); plt.plot(np.abs(np.fft.fft(self._vals, 1024))); plt.title("DFT of Received Signal")
         plt.subplot(223); plt.plot(self._I); plt.plot(self._Q); plt.ylim(-1.2,1.2); plt.title("Baseband IQ Data Over Time")
-        plt.subplot(224); plt.plot(self._I, self._Q, "."); plt.xlim(-1.2,1.2); plt.ylim(-1.2,1.2); plt.title("IQ Diagram")
+        plt.subplot(224); plt.plot(self._I, self._Q, "."); plt.xlim(-1.7,1.7); plt.ylim(-1.7,1.7); plt.title("IQ Diagram")
         plt.pause(0.1)
 
     def Tick(self, t):
@@ -246,8 +255,8 @@ class Rx:
                     SNR_dB = 10*np.log10(SNR)
                     Log("SNR = " + str(SNR_dB) + " dB")
 
-                self._I_rcv = self._vals * np.cos(2*np.pi*fc*self._tvals)
-                self._Q_rcv = self._vals * np.sin(2*np.pi*fc*self._tvals)
+                self._I_rcv = 2 * self._vals * np.cos(2*np.pi*fc*self._tvals)
+                self._Q_rcv = 2 * self._vals * np.sin(2*np.pi*fc*self._tvals)
 
                 N = len(self._I_rcv)
                 M = len(b)
@@ -297,6 +306,7 @@ class Rx:
                     Log("Got " + str(nCorrect) + "/" + str(nTotal) + " correct this time.")
                     Log("BER = " + str(self._BER))
                     Log("-----------------------------------------------------")
+                    self._txQ.put({"SNR":SNR_dB, "BER":self._BER})
 
                 if not self._paused:
                     self._Plot()
