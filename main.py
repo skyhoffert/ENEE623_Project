@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import msvcrt
 import numpy as np
 import threading
+import time
 from queue import Queue
 
 from util import Log
@@ -18,6 +19,7 @@ b = np.genfromtxt("filter.csv", delimiter=",")
 
 np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
+np.random.seed(int(time.time()))
 
 def main():
     Log("Main program started.")
@@ -25,10 +27,41 @@ def main():
     kb = threading.Thread(target=ThreadKB)
     kb.start()
 
-    ind = Individual()
+    # constellation_bpsk = [
+    #     np.array([1.0,0.0]), # 0
+    #     np.array([-1.0,0.0]) # 1
+    # ]
+    # constellation_qpsk = [
+    #     np.array([ 1.0,  1.0]), # 0
+    #     np.array([-1.0,  1.0]), # 1
+    #     np.array([-1.0, -1.0]), # 2
+    #     np.array([ 1.0, -1.0]), # 3
+    # ]
+
+    # M = RandomM()
+    # nc = RandomConstellation(M)
+    # Log("randM=" + str(M))
+    # x,y = ConstellationToXY(nc)
+    # plt.plot(x,y,"*")
+    # plt.show()
+
+    nPop = 3
+    population = []
+    for i in range(0,nPop):
+        M = RandomM()
+        population.append(Individual(M, 50, RandomConstellation(M)))
+
+    tReportMax = 5
+    tReport = tReportMax
+    tTurnOnTx = 5 # this depends on nSNR_averages
+    TxEnabled = False
 
     global KILL
     global kbQ
+    
+    # Prepare the matplotlib figre window to be always up.
+    plt.figure()
+    plt.ion()
 
     t = 0
     while not KILL:
@@ -37,16 +70,44 @@ def main():
 
             for k in act.split(" "):
                 if k == "t":
-                    ind.TxToggle()
+                    for ind in population:
+                        ind.TxToggle()
                 elif k == "r":
-                    ind.RxToggle()
+                    for ind in population:
+                        ind.RxToggle()
 
-        ind.Tick(t)
-        t += 1/Fs
+        for ind in population:
+            ind.Tick(t)
+
+        dT = 1/Fs
+        t += dT
 
         # DEBUG: is this needed? avoid overflow for various calculations
         if t > 100*Fs:
             t = 0
+
+        # DEBUG: report
+        tReport -= dT
+        if tReport <= 0:
+            tReport = tReportMax
+
+            # clear figure before overwriting
+            plt.clf()
+            for i,ind in enumerate(population):
+                rep = ind.Report()
+                Log(str(i) + ": " + str(rep))
+                
+                x,y = ConstellationToXY(rep["constellation"])
+                plt.subplot(221 + i); plt.plot(x,y,"*"); plt.title("Individual " + str(i))
+                plt.pause(0.01)
+        
+        # Handle automation actions that run the GA
+        if TxEnabled == False:
+            if t >= tTurnOnTx:
+                Log("---- Enabled Transmitter ----")
+                TxEnabled = True
+                for ind in population:
+                    ind.TxToggle()
 
     kb.join()
 
@@ -65,26 +126,42 @@ def ThreadKB():
 def AWGN(v):
     return np.random.normal(0,v,1)[0]
 
-class Individual:
-    def __init__(self):
-        self._M = 4
-        self._bpSym = int(np.log2(self._M))
-        self._spSym = 50
+def RandomM(t="uniform"):
+    if t == "uniform":
+        return 2**np.random.randint(1,5)
 
-        self._constellation = [
-            np.array([ 1.0,  1.0]), # 0
-            np.array([-1.0,  1.0]), # 1
-            np.array([-1.0, -1.0]), # 2
-            np.array([ 1.0, -1.0]), # 3
-        ]
+def RandomConstellationPoint(pmax=1.0):
+    return np.array([np.random.uniform(-pmax,pmax), np.random.uniform(-pmax,pmax)])
+
+def RandomConstellation(M):
+    c = []
+    for i in range(0,M):
+        c.append(RandomConstellationPoint())
+    return c
+
+def ConstellationToXY(c):
+    xs = []
+    ys = []
+    for pt in c:
+        xs.append(pt[0])
+        ys.append(pt[1])
+    return (xs,ys)
+
+class Individual:
+    def __init__(self, M, spSym, constellation):
+        self._M = M
+        self._bpSym = int(np.log2(self._M))
+        self._spSym = spSym
+
+        self._constellation = constellation
 
         self._chQ = Queue()
         self._rxQ = Queue()
         self._txQ = Queue()
 
-        self._tx = Tx(self._chQ, self._txQ, self._bpSym, self._spSym, self._constellation)
+        self._tx = Tx(self._chQ, self._txQ, self._M, self._spSym, self._constellation)
         self._ch = Ch(self._rxQ, self._chQ)
-        self._rx = Rx(self._txQ, self._rxQ, self._bpSym, self._spSym, self._constellation)
+        self._rx = Rx(self._txQ, self._rxQ, self._M, self._spSym, self._constellation)
 
     def Tick(self, t):
         self._tx.Tick(t)
@@ -98,8 +175,19 @@ class Individual:
     def RxToggle(self):
         self._rx.Toggle()
 
+    def Report(self):
+        return {
+            "M": self._M,
+            "spSym": self._spSym,
+            "constellation": self._constellation,
+            "BER": self._tx.GetBER(),
+            "SNR": self._tx.GetSNR(),
+            "TxPut": self._tx.GetTxPut(),
+            "Pavg": self._tx.GetPavg(),
+        }
+
 class Tx:
-    def __init__(self, txQ, rxQ, bpSym, spSym, constellation):
+    def __init__(self, txQ, rxQ, M, spSym, constellation):
         self._active = False
 
         self._txQ = txQ
@@ -110,11 +198,34 @@ class Tx:
         self._seq = SEQ
         self._nseq = len(self._seq)
 
-        self._bpSym = bpSym
+        self._M = M
+        self._bpSym = int(np.log2(self._M))
         self._spSym = spSym
         self._sec_per_sym = self._spSym / Fs
 
         self._constellation = constellation
+
+        self._BER = 1
+        self._SNR = 0
+        self._txPut = int(Fs * self._bpSym / self._spSym)
+
+        # calculate average power based on constellation
+        self._Pavg = 0
+        for i,c in enumerate(self._constellation):
+            self._Pavg += c[0]**2 + c[1]**2
+        self._Pavg /= self._M
+
+    def GetBER(self):
+        return self._BER
+
+    def GetSNR(self):
+        return self._SNR
+
+    def GetTxPut(self):
+        return self._txPut
+
+    def GetPavg(self):
+        return self._Pavg
 
     def Toggle(self):
         self._active = not self._active
@@ -141,7 +252,8 @@ class Tx:
         
         if not self._rxQ.empty():
             rx = self._rxQ.get()
-            Log("tx got SNR=" + str(rx["SNR"]) + ", BER=" + str(rx["BER"]))
+            self._BER = rx["BER"]
+            self._SNR = rx["SNR"]
 
 class Ch:
     def __init__(self, txQ, rxQ):
@@ -166,11 +278,11 @@ class Ch:
             self._txQ.put((t, AWGN(self._P_n)))
 
 class Rx:
-    def __init__(self, txQ, rxQ, bpSym, spSym, constellation):
+    def __init__(self, txQ, rxQ, M, spSym, constellation):
         self._rxQ = rxQ
         self._txQ = txQ
 
-        self._nvals = pow(2,15)
+        self._nvals = pow(2,14)
         self._vals = np.zeros(self._nvals)
         self._tvals = np.zeros(self._nvals)
         self._ivals = 0
@@ -185,7 +297,8 @@ class Rx:
         self._seq = SEQ
         self._nseq = len(self._seq)
         
-        self._bpSym = bpSym
+        self._M = M
+        self._bpSym = int(np.log2(self._M))
         self._spSym = spSym
         self._sec_per_sym = self._spSym / Fs
         self._isymsamples = 0
@@ -236,7 +349,7 @@ class Rx:
 
                 power = 1 / self._nvals * np.sum(np.square(self._vals))
                 power_dB = 10*np.log10(power)
-                Log("power = " + str(power_dB) + " dB")
+                # Log("power = " + str(power_dB) + " dB")
 
                 if self._transmitter_active:
                     self._powers_signal.append(power)
@@ -254,7 +367,7 @@ class Rx:
                 if self._P_s_n > self._P_n and self._P_n > 0:
                     SNR = (self._P_s_n - self._P_n) / self._P_n
                     SNR_dB = 10*np.log10(SNR)
-                    Log("SNR = " + str(SNR_dB) + " dB")
+                    # Log("SNR = " + str(SNR_dB) + " dB")
 
                 self._I_rcv = 2 * self._vals * np.cos(2*np.pi*fc*self._tvals)
                 self._Q_rcv = 2 * self._vals * np.sin(2*np.pi*fc*self._tvals)
@@ -299,7 +412,6 @@ class Rx:
                     
                 # TODO: fix BER, currently broken
                 # TODO: add metric for Power utilization! how much energy influences a constellation
-                # TODO: add metric for throughput (only applicable if M, # of points, is variable)
 
                 # Calculate BER
                 if self._transmitter_active:
@@ -308,9 +420,9 @@ class Rx:
                     self._BER = 1 - self._bits_correct / self._bits_total
 
                     # Output how many symbols were correct
-                    Log("Got " + str(nCorrect) + "/" + str(nTotal) + " correct this time.")
-                    Log("BER = " + str(self._BER))
-                    Log("-----------------------------------------------------")
+                    # Log("Got " + str(nCorrect) + "/" + str(nTotal) + " correct this time.")
+                    # Log("BER = " + str(self._BER))
+                    # Log("-----------------------------------------------------")
                     self._txQ.put({"SNR":SNR_dB, "BER":self._BER})
 
                 if not self._paused:
