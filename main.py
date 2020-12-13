@@ -55,14 +55,14 @@ def main():
     # plt.plot(x,y,"*")
     # plt.show()
 
-    nPop = 3
+    nPop = 6
     population = []
     for i in range(0,nPop):
         M = RandomM()
         population.append(Individual(M, RandomSpSym(), RandomConstellation(M)))
     nGen = 0
 
-    tReport = 10
+    tReport = 20
     tTurnOnTx = 5 # this depends on nSNR_averages
     TxEnabled = False
 
@@ -113,7 +113,7 @@ def main():
                 reports.append(rep)
                 
                 x,y = ConstellationToXY(rep["constellation"])
-                plt.subplot(221 + i); plt.plot(x,y,"*"); plt.title("Individual " + str(i))
+                plt.subplot(331 + i); plt.plot(x,y,"*"); plt.title("Individual " + str(i))
                 plt.pause(0.01)
             
             # Reset the simulation for the next generation
@@ -197,7 +197,6 @@ def NewGeneration(reps):
 
     # Keep the top half of the individuals
     nKeep = round(len(rankings)/2 + 0.1)
-    Log("nKeep " + str(nKeep))
     for i,r in enumerate(rankings):
         if i > nKeep-1:
             break
@@ -205,7 +204,6 @@ def NewGeneration(reps):
 
     # Breed and mutate for the rest of the population
     nNew = len(rankings) - nKeep
-    Log("nNew " + str(nNew))
     for i in range(0,nNew):
         # Randomly choose mate1
         mate1 = np.random.randint(0,nKeep)
@@ -240,10 +238,10 @@ def NewGeneration(reps):
         if np.random.uniform() > 0.5:
             wParent = mate2
         constellation = []
-        for j,c in reps[rankings[wParent]]["constellation"]:
-            constellation = np.append(constellation, np.array(c))
-            Log(str(constellation))
-        for j,c in enumerate(constellation):
+        for j,c in enumerate(reps[rankings[wParent]]["constellation"]):
+            constellation.append(np.array(c))
+        for j in range(0,len(constellation)):
+            c = constellation[j]
             constellation[j][0] = c[0] + np.random.normal(0,CPT_STDDEV)
             constellation[j][1] = c[1] + np.random.normal(0,CPT_STDDEV)
         nPtsNeeded = M - len(constellation)
