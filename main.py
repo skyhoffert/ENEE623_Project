@@ -21,6 +21,16 @@ np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
 np.random.seed(int(time.time()))
 
+SCORE_WEIGHTS = {
+    "BER": 0,
+    "SNR": 0,
+    "TxPut": 1,
+    "Pavg": 5,
+}
+M_MUTATION_CHANCE = 0.2 # Chance for M to change by +/- 1.
+SPSYM_STDDEV = 20 # stddev for SpSym value (tests suggested 50 was a good value)
+CPT_STDDEV = 0.2 # stddev for constellation point value (with base power of 1.0)
+
 def main():
     Log("Main program started.")
 
@@ -49,10 +59,10 @@ def main():
     population = []
     for i in range(0,nPop):
         M = RandomM()
-        population.append(Individual(M, 50, RandomConstellation(M)))
+        population.append(Individual(M, RandomSpSym(), RandomConstellation(M)))
+    nGen = 0
 
-    tReportMax = 5
-    tReport = tReportMax
+    tReport = 10
     tTurnOnTx = 5 # this depends on nSNR_averages
     TxEnabled = False
 
@@ -62,6 +72,7 @@ def main():
     # Prepare the matplotlib figre window to be always up.
     plt.figure()
     plt.ion()
+    reports = []
 
     t = 0
     while not KILL:
@@ -86,20 +97,30 @@ def main():
         if t > 100*Fs:
             t = 0
 
-        # DEBUG: report
-        tReport -= dT
-        if tReport <= 0:
-            tReport = tReportMax
-
+        # Here, a generation reproduces
+        if t > tReport:
             # clear figure before overwriting
             plt.clf()
+
+            Log("---- Generation " + str(nGen) + " ----")
+
+            reports = []
+
             for i,ind in enumerate(population):
                 rep = ind.Report()
                 Log(str(i) + ": " + str(rep))
+                Log("Score=" + str(ScoreReport(rep)))
+                reports.append(rep)
                 
                 x,y = ConstellationToXY(rep["constellation"])
                 plt.subplot(221 + i); plt.plot(x,y,"*"); plt.title("Individual " + str(i))
                 plt.pause(0.01)
+            
+            # Reset the simulation for the next generation
+            t = 0
+            TxEnabled = False
+            population = NewGeneration(reports)
+            nGen += 1
         
         # Handle automation actions that run the GA
         if TxEnabled == False:
@@ -109,7 +130,15 @@ def main():
                 for ind in population:
                     ind.TxToggle()
 
+    # If we reach here, the program has been halted -> save the population
+
     kb.join()
+
+    f = open("file.txt", "w")
+    for i,ind in enumerate(population):
+        f.write(str(ind.Report()))
+        f.write("\n")
+    f.close()
 
     Log("Main program ended.")
 
@@ -139,6 +168,9 @@ def RandomConstellation(M):
         c.append(RandomConstellationPoint())
     return c
 
+def RandomSpSym():
+    return np.random.randint(1,200) # TODO: is this a good range? arbitrarily chosen
+
 def ConstellationToXY(c):
     xs = []
     ys = []
@@ -146,6 +178,81 @@ def ConstellationToXY(c):
         xs.append(pt[0])
         ys.append(pt[1])
     return (xs,ys)
+
+def ScoreReport(rep):
+    # We care about BER, SNR, TxPut, and Pavg
+    return 1/rep["BER"] * SCORE_WEIGHTS["BER"] + \
+        rep["SNR"] * SCORE_WEIGHTS["SNR"] + \
+        rep["TxPut"] * SCORE_WEIGHTS["TxPut"] + \
+        1/rep["Pavg"] * SCORE_WEIGHTS["Pavg"]
+
+def NewGeneration(reps):
+    scores = np.zeros(len(reps))
+    for i,rep in enumerate(reps):
+        scores[i] = ScoreReport(rep)
+    rankings = np.flipud(np.argsort(scores))
+    Log("rankings:" + str(rankings))
+    
+    newpop = []
+
+    # Keep the top half of the individuals
+    nKeep = round(len(rankings)/2 + 0.1)
+    Log("nKeep " + str(nKeep))
+    for i,r in enumerate(rankings):
+        if i > nKeep-1:
+            break
+        newpop.append(Individual(reps[r]["M"], reps[r]["spSym"], reps[r]["constellation"]))
+
+    # Breed and mutate for the rest of the population
+    nNew = len(rankings) - nKeep
+    Log("nNew " + str(nNew))
+    for i in range(0,nNew):
+        # Randomly choose mate1
+        mate1 = np.random.randint(0,nKeep)
+
+        # Randomly choose mate2, don't choose mate1 as mate2
+        mate2 = mate1
+        while mate2 == mate1:
+            mate2 = np.random.randint(0,nKeep)
+        
+        # Decide what value of M to take
+        b1 = np.log2(reps[rankings[mate1]]["M"])
+        b2 = np.log2(reps[rankings[mate2]]["M"])
+        # average the two Ms, select closest value
+        b = round((b1 + b2)/2)
+        # randomly add or subtract
+        if np.random.uniform() < M_MUTATION_CHANCE:
+            Log("---- Mutation of M from " + str(2**b), end="")
+            b += (2 * np.random.randint(0,2)) - 1
+            Log(" to " + str(2**b) + " ----")
+        M = 2**b
+        # M must be at least 2
+        if M < 2:
+            M = 2
+
+        # Decide what value of SpSym to take
+        s = round((reps[rankings[mate1]]["spSym"] + reps[rankings[mate1]]["spSym"])/2 + np.random.normal(0,SPSYM_STDDEV))
+        if s < 2:
+            s = 2
+
+        # Decide what constellation to use
+        wParent = mate1
+        if np.random.uniform() > 0.5:
+            wParent = mate2
+        constellation = []
+        for j,c in reps[rankings[wParent]]["constellation"]:
+            constellation = np.append(constellation, np.array(c))
+            Log(str(constellation))
+        for j,c in enumerate(constellation):
+            constellation[j][0] = c[0] + np.random.normal(0,CPT_STDDEV)
+            constellation[j][1] = c[1] + np.random.normal(0,CPT_STDDEV)
+        nPtsNeeded = M - len(constellation)
+        for j in range(0,nPtsNeeded+1):
+            constellation.append(RandomConstellationPoint())
+
+        newpop.append(Individual(M, s, constellation))
+
+    return newpop
 
 class Individual:
     def __init__(self, M, spSym, constellation):
@@ -207,7 +314,7 @@ class Tx:
 
         self._BER = 1
         self._SNR = 0
-        self._txPut = int(Fs * self._bpSym / self._spSym)
+        self._txPut = int(Fs * self._bpSym / self._spSym) # bps
 
         # calculate average power based on constellation
         self._Pavg = 0
@@ -222,7 +329,7 @@ class Tx:
         return self._SNR
 
     def GetTxPut(self):
-        return self._txPut
+        return int(self._txPut * (1-self._BER)) # Depends on BER, in units of bps
 
     def GetPavg(self):
         return self._Pavg
@@ -238,7 +345,14 @@ class Tx:
             # Get next symbol from PRBS sequence, at iseq. bpSym in len
             self._iseq = int(np.floor(t / self._sec_per_sym) * self._bpSym) % self._nseq
 
-            vals = self._seq[self._iseq:self._iseq+self._bpSym]
+            vals = np.array(self._seq[self._iseq:self._iseq+self._bpSym])
+
+            # Needed in case bpsym is odd, don't go over the end of SEQ
+            needvals = self._bpSym - len(vals)
+            if needvals > 0:
+                for i in range(0,needvals):
+                    vals = np.append(vals, self._seq[i])
+
             v = 0 # this is the decimal value of the next symbol
             for i in range(0,self._bpSym):
                 v += vals[i] * 2**(self._bpSym-i-1)
