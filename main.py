@@ -1,14 +1,15 @@
 # Sky Hoffert
 # ENEE623 Project main class.
 
+import json
 import matplotlib.pyplot as plt
 import msvcrt
 import numpy as np
 import threading
-import time
+from datetime import datetime
 from queue import Queue
 
-from util import Log
+from util import Log, ConstellationToXY
 
 kbQ = Queue()
 KILL = False
@@ -19,13 +20,13 @@ b = np.genfromtxt("filter.csv", delimiter=",")
 
 np.random.seed(123456)
 SEQ = np.random.randint(2, size=16384)
-np.random.seed(int(time.time()))
+np.random.seed(int(datetime.now().timestamp()))
 
 SCORE_WEIGHTS = {
-    "BER": 0,
+    "BER": 1,
     "SNR": 0,
-    "TxPut": 1,
-    "Pavg": 5,
+    "TxPut": 2,
+    "Pavg": 10,
 }
 M_MUTATION_CHANCE = 0.2 # Chance for M to change by +/- 1.
 SPSYM_STDDEV = 20 # stddev for SpSym value (tests suggested 50 was a good value)
@@ -55,14 +56,14 @@ def main():
     # plt.plot(x,y,"*")
     # plt.show()
 
-    nPop = 6
+    nPop = 9
     population = []
     for i in range(0,nPop):
         M = RandomM()
         population.append(Individual(M, RandomSpSym(), RandomConstellation(M)))
     nGen = 0
 
-    tReport = 20
+    tReport = 15
     tTurnOnTx = 5 # this depends on nSNR_averages
     TxEnabled = False
 
@@ -73,6 +74,10 @@ def main():
     plt.figure()
     plt.ion()
     reports = []
+
+    fname = "reports_" + datetime.now().strftime("%b-%d-%H-%M-%S") + ".txt"
+    f = open(fname, "w")
+    fwrobj = {"Reports":[]}
 
     t = 0
     while not KILL:
@@ -115,6 +120,19 @@ def main():
                 x,y = ConstellationToXY(rep["constellation"])
                 plt.subplot(331 + i); plt.plot(x,y,"*"); plt.title("Individual " + str(i))
                 plt.pause(0.01)
+
+            # for i,rep in enumerate(reports):
+            #     f.write(json.dumps(rep))
+            #     f.write("\n")
+            thisone = {
+                "Weights": SCORE_WEIGHTS,
+                "M Mutation": M_MUTATION_CHANCE,
+                "spSym Stddev": SPSYM_STDDEV,
+                "cpt Stddev": CPT_STDDEV,
+                "Generation": nGen,
+                "Reports": reports,
+            }
+            fwrobj["Reports"].append(thisone)
             
             # Reset the simulation for the next generation
             t = 0
@@ -130,15 +148,10 @@ def main():
                 for ind in population:
                     ind.TxToggle()
 
-    # If we reach here, the program has been halted -> save the population
+    f.write(json.dumps(fwrobj))
+    f.close()
 
     kb.join()
-
-    f = open("file.txt", "w")
-    for i,ind in enumerate(population):
-        f.write(str(ind.Report()))
-        f.write("\n")
-    f.close()
 
     Log("Main program ended.")
 
@@ -160,7 +173,7 @@ def RandomM(t="uniform"):
         return 2**np.random.randint(1,5)
 
 def RandomConstellationPoint(pmax=1.0):
-    return np.array([np.random.uniform(-pmax,pmax), np.random.uniform(-pmax,pmax)])
+    return {"I":np.random.uniform(-pmax,pmax), "Q":np.random.uniform(-pmax,pmax)}
 
 def RandomConstellation(M):
     c = []
@@ -170,14 +183,6 @@ def RandomConstellation(M):
 
 def RandomSpSym():
     return np.random.randint(1,200) # TODO: is this a good range? arbitrarily chosen
-
-def ConstellationToXY(c):
-    xs = []
-    ys = []
-    for pt in c:
-        xs.append(pt[0])
-        ys.append(pt[1])
-    return (xs,ys)
 
 def ScoreReport(rep):
     # We care about BER, SNR, TxPut, and Pavg
@@ -197,10 +202,16 @@ def NewGeneration(reps):
 
     # Keep the top half of the individuals
     nKeep = round(len(rankings)/2 + 0.1)
+    nKeep = 2 # TODO: remove this, testing...
     for i,r in enumerate(rankings):
         if i > nKeep-1:
             break
-        newpop.append(Individual(reps[r]["M"], reps[r]["spSym"], reps[r]["constellation"]))
+
+        # Deep copy parent constellation
+        constellation = []
+        for j,c in enumerate(reps[r]["constellation"]):
+            constellation.append({"I":c["I"],"Q":c["Q"]})
+        newpop.append(Individual(reps[r]["M"], reps[r]["spSym"], constellation))
 
     # Breed and mutate for the rest of the population
     nNew = len(rankings) - nKeep
@@ -239,14 +250,16 @@ def NewGeneration(reps):
             wParent = mate2
         constellation = []
         for j,c in enumerate(reps[rankings[wParent]]["constellation"]):
-            constellation.append(np.array(c))
+            constellation.append({"I":c["I"],"Q":c["Q"]})
         for j in range(0,len(constellation)):
             c = constellation[j]
-            constellation[j][0] = c[0] + np.random.normal(0,CPT_STDDEV)
-            constellation[j][1] = c[1] + np.random.normal(0,CPT_STDDEV)
+            constellation[j]["I"] = c["I"] + np.random.normal(0,CPT_STDDEV)
+            constellation[j]["Q"] = c["Q"] + np.random.normal(0,CPT_STDDEV)
         nPtsNeeded = M - len(constellation)
         for j in range(0,nPtsNeeded+1):
             constellation.append(RandomConstellationPoint())
+        if len(constellation) > M:
+            constellation = constellation[0:M]
 
         newpop.append(Individual(M, s, constellation))
 
@@ -281,10 +294,13 @@ class Individual:
         self._rx.Toggle()
 
     def Report(self):
+        c = []
+        for i,con in enumerate(self._constellation):
+            c.append({"I":self._constellation[i]["I"], "Q":self._constellation[i]["Q"]})
         return {
             "M": self._M,
             "spSym": self._spSym,
-            "constellation": self._constellation,
+            "constellation": c,
             "BER": self._tx.GetBER(),
             "SNR": self._tx.GetSNR(),
             "TxPut": self._tx.GetTxPut(),
@@ -317,7 +333,7 @@ class Tx:
         # calculate average power based on constellation
         self._Pavg = 0
         for i,c in enumerate(self._constellation):
-            self._Pavg += c[0]**2 + c[1]**2
+            self._Pavg += c["I"]**2 + c["Q"]**2
         self._Pavg /= self._M
 
     def GetBER(self):
@@ -356,8 +372,8 @@ class Tx:
                 v += vals[i] * 2**(self._bpSym-i-1)
             sym = self._constellation[v]
 
-            I = sym[0]
-            Q = sym[1]
+            I = sym["I"]
+            Q = sym["Q"]
             samp = I*np.cos(2*np.pi*fc*t) + Q*np.sin(2*np.pi*fc*t)
             
             self._txQ.put((t,samp))
@@ -501,7 +517,8 @@ class Rx:
                         dists = np.zeros(len(self._constellation))
 
                         for (i,c) in enumerate(self._constellation):
-                            dist = np.linalg.norm(v - c)
+                            pt = np.array([c["I"], c["Q"]])
+                            dist = np.linalg.norm(v - pt)
                             dists[i] = dist
                         guess_val = np.argmin(dists)
 

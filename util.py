@@ -14,3 +14,11 @@ def Log(s, end="\n"):
     sys.stdout.write(s)
     sys.stdout.write(end)
     sys.stdout.flush()
+
+def ConstellationToXY(c):
+    xs = []
+    ys = []
+    for pt in c:
+        xs.append(pt["I"])
+        ys.append(pt["Q"])
+    return (xs,ys)
